@@ -86,10 +86,10 @@ export default function Home() {
       const fileType = selectedFile.type;
       const validTypes = ['audio/', 'video/'];
       
-      // Check file size (4.5MB limit for Vercel hobby plan)
-      const maxSize = 4.5 * 1024 * 1024; // 4.5MB in bytes
+      // Check file size (allow larger files since we can compress them)
+      const maxSize = 25 * 1024 * 1024; // 25MB in bytes (reasonable limit)
       if (selectedFile.size > maxSize) {
-        setError(`File too large. Maximum size is 4.5MB, your file is ${(selectedFile.size / 1024 / 1024).toFixed(2)}MB`);
+        setError(`File too large. Maximum size is 25MB, your file is ${(selectedFile.size / 1024 / 1024).toFixed(2)}MB`);
         setFile(null);
         return;
       }
@@ -226,6 +226,12 @@ export default function Home() {
   const transcribeAudio = async (audioBlob) => {
     setProgress('Sending to Whisper AI for transcription...');
     
+    // Check if file is too large and needs chunked upload
+    const maxSize = 4.5 * 1024 * 1024; // 4.5MB
+    if (audioBlob.size > maxSize) {
+      return await transcribeLargeFile(audioBlob);
+    }
+    
     const formData = new FormData();
     formData.append('audio', audioBlob, 'audio.wav');
     
@@ -262,6 +268,54 @@ export default function Home() {
       return data.transcription;
     } catch (err) {
       throw new Error(`Transcription error: ${err.message}`);
+    }
+  };
+
+  const transcribeLargeFile = async (audioBlob) => {
+    setProgress('Large file detected - compressing for upload...');
+    
+    // For large files, we'll compress them first
+    try {
+      // Create a compressed version using Web Audio API
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      
+      // Try to decode and re-encode with lower quality
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      
+      // Reduce sample rate to 16kHz (good for speech)
+      const targetSampleRate = 16000;
+      const length = Math.floor(audioBuffer.length * targetSampleRate / audioBuffer.sampleRate);
+      const compressedBuffer = audioContext.createBuffer(
+        audioBuffer.numberOfChannels,
+        length,
+        targetSampleRate
+      );
+      
+      // Copy and resample audio data
+      for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+        const inputData = audioBuffer.getChannelData(channel);
+        const outputData = compressedBuffer.getChannelData(channel);
+        
+        for (let i = 0; i < length; i++) {
+          const inputIndex = Math.floor(i * audioBuffer.sampleRate / targetSampleRate);
+          outputData[i] = inputData[inputIndex];
+        }
+      }
+      
+      // Convert to WAV with lower quality
+      const compressedWav = await audioBufferToWav(compressedBuffer);
+      
+      // Check if compression helped
+      if (compressedWav.size > maxSize) {
+        throw new Error(`File is too large even after compression (${(compressedWav.size / 1024 / 1024).toFixed(2)}MB). Please use a shorter audio file or upgrade to Vercel Pro plan.`);
+      }
+      
+      setProgress('Uploading compressed file...');
+      return await transcribeAudio(compressedWav);
+      
+    } catch (err) {
+      throw new Error(`Large file processing failed: ${err.message}`);
     }
   };
 
