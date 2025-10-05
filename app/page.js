@@ -110,7 +110,12 @@ export default function Home() {
     
     // For video files, extract audio track locally
     if (file.type.startsWith('video/')) {
-      return await extractAudioFromVideo(file);
+      try {
+        return await extractAudioFromVideo(file);
+      } catch (err) {
+        console.warn('Video extraction failed, trying fallback method:', err);
+        return await extractAudioFromVideoFallback(file);
+      }
     }
     
     // For audio files, try to convert to WAV if needed
@@ -164,93 +169,154 @@ export default function Home() {
     return new Promise((resolve, reject) => {
       const video = document.createElement('video');
       const canvas = document.createElement('canvas');
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
       
+      // Set video properties
       video.crossOrigin = 'anonymous';
       video.muted = true; // Important: mute to avoid feedback
+      video.preload = 'metadata';
+      
+      // Add error handling for different scenarios
+      video.onerror = (event) => {
+        const error = event.target.error;
+        let errorMessage = 'Failed to load video';
+        
+        if (error) {
+          switch (error.code) {
+            case error.MEDIA_ERR_ABORTED:
+              errorMessage = 'Video loading was aborted';
+              break;
+            case error.MEDIA_ERR_NETWORK:
+              errorMessage = 'Network error while loading video';
+              break;
+            case error.MEDIA_ERR_DECODE:
+              errorMessage = 'Video format not supported or corrupted';
+              break;
+            case error.MEDIA_ERR_SRC_NOT_SUPPORTED:
+              errorMessage = 'Video format not supported by browser';
+              break;
+            default:
+              errorMessage = `Video loading error: ${error.message || 'Unknown error'}`;
+          }
+        }
+        
+        console.error('Video loading error:', error);
+        reject(new Error(errorMessage));
+      };
       
       video.onloadedmetadata = () => {
         setProgress('Processing video audio track...');
         
-        // Set up canvas for audio extraction
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        
-        // Create a media stream from the video
-        const stream = canvas.captureStream(30); // 30 FPS
-        
-        // Get audio tracks from the video
-        const audioTracks = video.captureStream().getAudioTracks();
-        
-        if (audioTracks.length === 0) {
-          reject(new Error('No audio track found in video file'));
-          return;
+        try {
+          // Set up canvas for audio extraction
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          
+          // Create a media stream from the video
+          const stream = canvas.captureStream(30); // 30 FPS
+          
+          // Get audio tracks from the video
+          const audioTracks = video.captureStream().getAudioTracks();
+          
+          if (audioTracks.length === 0) {
+            reject(new Error('No audio track found in video file'));
+            return;
+          }
+          
+          // Create audio-only stream
+          const audioStream = new MediaStream(audioTracks);
+          
+          // Check if MediaRecorder supports the format
+          const supportedTypes = [
+            'audio/webm;codecs=opus',
+            'audio/webm',
+            'audio/mp4',
+            'audio/wav'
+          ];
+          
+          let mimeType = 'audio/webm;codecs=opus';
+          for (const type of supportedTypes) {
+            if (MediaRecorder.isTypeSupported(type)) {
+              mimeType = type;
+              break;
+            }
+          }
+          
+          // Use MediaRecorder to extract audio
+          const mediaRecorder = new MediaRecorder(audioStream, {
+            mimeType: mimeType
+          });
+          
+          const chunks = [];
+          
+          mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) {
+              chunks.push(e.data);
+            }
+          };
+          
+          mediaRecorder.onstop = async () => {
+            try {
+              const audioBlob = new Blob(chunks, { type: mimeType });
+              
+              // Convert to WAV for better compatibility
+              setProgress('Converting extracted audio to WAV...');
+              const wavBlob = await convertWebmToWav(audioBlob);
+              
+              console.log(`Video: ${(videoFile.size / 1024 / 1024).toFixed(2)}MB -> Audio: ${(wavBlob.size / 1024 / 1024).toFixed(2)}MB`);
+              resolve(wavBlob);
+            } catch (err) {
+              reject(new Error(`Audio extraction failed: ${err.message}`));
+            }
+          };
+          
+          mediaRecorder.onerror = (err) => {
+            reject(new Error(`MediaRecorder error: ${err}`));
+          };
+          
+          // Start recording
+          mediaRecorder.start(1000); // Record in 1-second chunks
+          
+          // Play the video to extract audio
+          video.play().catch(err => {
+            reject(new Error(`Failed to play video: ${err.message}`));
+          });
+          
+          // Stop recording when video ends
+          video.onended = () => {
+            if (mediaRecorder.state === 'recording') {
+              mediaRecorder.stop();
+            }
+          };
+          
+          // Safety timeout
+          setTimeout(() => {
+            if (mediaRecorder.state === 'recording') {
+              mediaRecorder.stop();
+            }
+          }, (video.duration || 60) * 1000 + 5000); // Video duration + 5 seconds buffer
+          
+        } catch (err) {
+          reject(new Error(`Video processing setup failed: ${err.message}`));
         }
-        
-        // Create audio-only stream
-        const audioStream = new MediaStream(audioTracks);
-        
-        // Use MediaRecorder to extract audio
-        const mediaRecorder = new MediaRecorder(audioStream, {
-          mimeType: 'audio/webm;codecs=opus'
-        });
-        
-        const chunks = [];
-        
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) {
-            chunks.push(e.data);
-          }
-        };
-        
-        mediaRecorder.onstop = async () => {
-          try {
-            const audioBlob = new Blob(chunks, { type: 'audio/webm' });
-            
-            // Convert to WAV for better compatibility
-            setProgress('Converting extracted audio to WAV...');
-            const wavBlob = await convertWebmToWav(audioBlob);
-            
-            console.log(`Video: ${(videoFile.size / 1024 / 1024).toFixed(2)}MB -> Audio: ${(wavBlob.size / 1024 / 1024).toFixed(2)}MB`);
-            resolve(wavBlob);
-          } catch (err) {
-            reject(new Error(`Audio extraction failed: ${err.message}`));
-          }
-        };
-        
-        mediaRecorder.onerror = (err) => {
-          reject(new Error(`MediaRecorder error: ${err}`));
-        };
-        
-        // Start recording
-        mediaRecorder.start(1000); // Record in 1-second chunks
-        
-        // Play the video to extract audio
-        video.play().catch(err => {
-          reject(new Error(`Failed to play video: ${err.message}`));
-        });
-        
-        // Stop recording when video ends
-        video.onended = () => {
-          mediaRecorder.stop();
-        };
-        
-        // Safety timeout
-        setTimeout(() => {
-          if (mediaRecorder.state === 'recording') {
-            mediaRecorder.stop();
-          }
-        }, video.duration * 1000 + 5000); // Video duration + 5 seconds buffer
-      };
-      
-      video.onerror = (err) => {
-        reject(new Error(`Failed to load video: ${err.message}`));
       };
       
       // Load the video
-      video.src = URL.createObjectURL(videoFile);
-      video.load();
+      try {
+        video.src = URL.createObjectURL(videoFile);
+        video.load();
+      } catch (err) {
+        reject(new Error(`Failed to create video URL: ${err.message}`));
+      }
     });
+  };
+
+  const extractAudioFromVideoFallback = async (videoFile) => {
+    setProgress('Using fallback method to extract audio...');
+    
+    // Fallback: Send the original video file to the server
+    // Whisper AI can handle video files directly
+    console.log('Using fallback: sending video file directly to Whisper AI');
+    return videoFile;
   };
 
   const convertWebmToWav = async (webmBlob) => {
