@@ -86,6 +86,14 @@ export default function Home() {
       const fileType = selectedFile.type;
       const validTypes = ['audio/', 'video/'];
       
+      // Check file size (4.5MB limit for Vercel hobby plan)
+      const maxSize = 4.5 * 1024 * 1024; // 4.5MB in bytes
+      if (selectedFile.size > maxSize) {
+        setError(`File too large. Maximum size is 4.5MB, your file is ${(selectedFile.size / 1024 / 1024).toFixed(2)}MB`);
+        setFile(null);
+        return;
+      }
+      
       if (validTypes.some(type => fileType.startsWith(type))) {
         setFile(selectedFile);
         setError('');
@@ -228,8 +236,26 @@ export default function Home() {
       });
       
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || `Transcription failed: ${response.status}`);
+        // Try to get error message, but handle non-JSON responses
+        let errorMessage = `Transcription failed: ${response.status}`;
+        try {
+          const error = await response.json();
+          errorMessage = error.message || errorMessage;
+        } catch (jsonErr) {
+          // If response is not JSON, get the text
+          const errorText = await response.text();
+          console.error('Non-JSON error response:', errorText);
+          errorMessage = `Server error: ${response.status} - ${errorText.substring(0, 100)}`;
+        }
+        throw new Error(errorMessage);
+      }
+      
+      // Check if response is JSON
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        const responseText = await response.text();
+        console.error('Non-JSON response:', responseText);
+        throw new Error(`Invalid response format: ${responseText.substring(0, 100)}`);
       }
       
       const data = await response.json();

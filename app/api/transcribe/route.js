@@ -11,6 +11,17 @@ export async function POST(request) {
       );
     }
 
+    // Check file size (Vercel has a 4.5MB limit on hobby plan)
+    const maxSize = 4.5 * 1024 * 1024; // 4.5MB in bytes
+    if (audioFile.size > maxSize) {
+      return Response.json(
+        { message: `File too large. Maximum size is 4.5MB, your file is ${(audioFile.size / 1024 / 1024).toFixed(2)}MB` },
+        { status: 413 }
+      );
+    }
+
+    console.log(`Processing file: ${audioFile.name}, size: ${audioFile.size} bytes, type: ${audioFile.type}`);
+
     // Prepare the form data for OpenAI
     const openAIFormData = new FormData();
     openAIFormData.append('file', audioFile);
@@ -30,7 +41,7 @@ export async function POST(request) {
       const errorText = await response.text();
       console.error('OpenAI API error:', errorText);
       return Response.json(
-        { message: 'Transcription failed. Please try again.' },
+        { message: `Transcription failed: ${errorText}` },
         { status: response.status }
       );
     }
@@ -41,7 +52,7 @@ export async function POST(request) {
   } catch (error) {
     console.error('Transcription error:', error);
     return Response.json(
-      { message: 'An error occurred during transcription' },
+      { message: `An error occurred during transcription: ${error.message}` },
       { status: 500 }
     );
   }
