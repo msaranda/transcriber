@@ -86,10 +86,10 @@ export default function Home() {
       const fileType = selectedFile.type;
       const validTypes = ['audio/', 'video/'];
       
-      // Check file size (allow larger files since we can compress them)
-      const maxSize = 25 * 1024 * 1024; // 25MB in bytes (reasonable limit)
+      // Check file size (allow much larger files since we extract audio locally)
+      const maxSize = 100 * 1024 * 1024; // 100MB in bytes (reasonable limit for video files)
       if (selectedFile.size > maxSize) {
-        setError(`File too large. Maximum size is 25MB, your file is ${(selectedFile.size / 1024 / 1024).toFixed(2)}MB`);
+        setError(`File too large. Maximum size is 100MB, your file is ${(selectedFile.size / 1024 / 1024).toFixed(2)}MB`);
         setFile(null);
         return;
       }
@@ -108,10 +108,9 @@ export default function Home() {
   const convertToAudio = async (file) => {
     setProgress('Converting to audio format...');
     
-    // For video files, send directly to the server - Whisper can handle video files
+    // For video files, extract audio track locally
     if (file.type.startsWith('video/')) {
-      setProgress('Video file detected - sending directly to Whisper AI...');
-      return file; // Return the original file, Whisper can handle video
+      return await extractAudioFromVideo(file);
     }
     
     // For audio files, try to convert to WAV if needed
@@ -156,6 +155,160 @@ export default function Home() {
       };
       
       reader.readAsArrayBuffer(file);
+    });
+  };
+
+  const extractAudioFromVideo = async (videoFile) => {
+    setProgress('Extracting audio from video...');
+    
+    return new Promise((resolve, reject) => {
+      const video = document.createElement('video');
+      const canvas = document.createElement('canvas');
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      
+      video.crossOrigin = 'anonymous';
+      video.muted = true; // Important: mute to avoid feedback
+      
+      video.onloadedmetadata = () => {
+        setProgress('Processing video audio track...');
+        
+        // Set up canvas for audio extraction
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        
+        // Create a media stream from the video
+        const stream = canvas.captureStream(30); // 30 FPS
+        
+        // Get audio tracks from the video
+        const audioTracks = video.captureStream().getAudioTracks();
+        
+        if (audioTracks.length === 0) {
+          reject(new Error('No audio track found in video file'));
+          return;
+        }
+        
+        // Create audio-only stream
+        const audioStream = new MediaStream(audioTracks);
+        
+        // Use MediaRecorder to extract audio
+        const mediaRecorder = new MediaRecorder(audioStream, {
+          mimeType: 'audio/webm;codecs=opus'
+        });
+        
+        const chunks = [];
+        
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) {
+            chunks.push(e.data);
+          }
+        };
+        
+        mediaRecorder.onstop = async () => {
+          try {
+            const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+            
+            // Convert to WAV for better compatibility
+            setProgress('Converting extracted audio to WAV...');
+            const wavBlob = await convertWebmToWav(audioBlob);
+            
+            console.log(`Video: ${(videoFile.size / 1024 / 1024).toFixed(2)}MB -> Audio: ${(wavBlob.size / 1024 / 1024).toFixed(2)}MB`);
+            resolve(wavBlob);
+          } catch (err) {
+            reject(new Error(`Audio extraction failed: ${err.message}`));
+          }
+        };
+        
+        mediaRecorder.onerror = (err) => {
+          reject(new Error(`MediaRecorder error: ${err}`));
+        };
+        
+        // Start recording
+        mediaRecorder.start(1000); // Record in 1-second chunks
+        
+        // Play the video to extract audio
+        video.play().catch(err => {
+          reject(new Error(`Failed to play video: ${err.message}`));
+        });
+        
+        // Stop recording when video ends
+        video.onended = () => {
+          mediaRecorder.stop();
+        };
+        
+        // Safety timeout
+        setTimeout(() => {
+          if (mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+          }
+        }, video.duration * 1000 + 5000); // Video duration + 5 seconds buffer
+      };
+      
+      video.onerror = (err) => {
+        reject(new Error(`Failed to load video: ${err.message}`));
+      };
+      
+      // Load the video
+      video.src = URL.createObjectURL(videoFile);
+      video.load();
+    });
+  };
+
+  const convertWebmToWav = async (webmBlob) => {
+    return new Promise((resolve, reject) => {
+      const audio = document.createElement('audio');
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      
+      audio.onloadedmetadata = async () => {
+        try {
+          // Create a media stream from the audio element
+          const stream = audio.captureStream();
+          const audioTracks = stream.getAudioTracks();
+          
+          if (audioTracks.length === 0) {
+            reject(new Error('No audio tracks found'));
+            return;
+          }
+          
+          // Use MediaRecorder to convert to WAV
+          const mediaRecorder = new MediaRecorder(new MediaStream(audioTracks), {
+            mimeType: 'audio/wav'
+          });
+          
+          const chunks = [];
+          
+          mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) {
+              chunks.push(e.data);
+            }
+          };
+          
+          mediaRecorder.onstop = () => {
+            const wavBlob = new Blob(chunks, { type: 'audio/wav' });
+            resolve(wavBlob);
+          };
+          
+          mediaRecorder.onerror = (err) => {
+            reject(new Error(`WAV conversion failed: ${err}`));
+          };
+          
+          mediaRecorder.start();
+          audio.play();
+          
+          audio.onended = () => {
+            mediaRecorder.stop();
+          };
+          
+        } catch (err) {
+          reject(new Error(`Audio processing failed: ${err.message}`));
+        }
+      };
+      
+      audio.onerror = (err) => {
+        reject(new Error(`Failed to load audio: ${err.message}`));
+      };
+      
+      audio.src = URL.createObjectURL(webmBlob);
+      audio.load();
     });
   };
 
