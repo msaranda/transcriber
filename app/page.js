@@ -22,13 +22,28 @@ export default function Home() {
       .then(data => {
         setAllowedEmails(data.allowedEmails);
         
+        // Create the Google response handler with the loaded emails
+        const handleGoogleResponseWithEmails = (response) => {
+          // Decode JWT token to get user info
+          const userObject = JSON.parse(atob(response.credential.split('.')[1]));
+          
+          if (data.allowedEmails.includes(userObject.email)) {
+            setUser(userObject);
+            setIsAuthorized(true);
+            setError('');
+          } else {
+            setError('Access denied. Your email is not authorized to use this service.');
+            setIsAuthorized(false);
+          }
+        };
+        
         // Load Google Sign-In with the client ID from server
         const script = document.createElement('script');
         script.src = 'https://accounts.google.com/gsi/client';
         script.onload = () => {
           window.google.accounts.id.initialize({
             client_id: data.googleClientId,
-            callback: handleGoogleResponse,
+            callback: handleGoogleResponseWithEmails,
             auto_select: false,
           });
           window.google.accounts.id.renderButton(
@@ -51,19 +66,6 @@ export default function Home() {
       });
   }, []);
 
-  const handleGoogleResponse = (response) => {
-    // Decode JWT token to get user info
-    const userObject = JSON.parse(atob(response.credential.split('.')[1]));
-    
-    if (allowedEmails.includes(userObject.email)) {
-      setUser(userObject);
-      setIsAuthorized(true);
-      setError('');
-    } else {
-      setError('Access denied. Your email is not authorized to use this service.');
-      setIsAuthorized(false);
-    }
-  };
 
   const handleLogout = () => {
     setUser(null);
