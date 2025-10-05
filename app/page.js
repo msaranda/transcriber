@@ -100,6 +100,13 @@ export default function Home() {
   const convertToAudio = async (file) => {
     setProgress('Converting to audio format...');
     
+    // For video files, send directly to the server - Whisper can handle video files
+    if (file.type.startsWith('video/')) {
+      setProgress('Video file detected - sending directly to Whisper AI...');
+      return file; // Return the original file, Whisper can handle video
+    }
+    
+    // For audio files, try to convert to WAV if needed
     return new Promise((resolve, reject) => {
       const audioContext = new (window.AudioContext || window.webkitAudioContext)();
       const reader = new FileReader();
@@ -129,11 +136,17 @@ export default function Home() {
           const wavBlob = await audioBufferToWav(wavBuffer);
           resolve(wavBlob);
         } catch (err) {
-          reject(err);
+          // If direct decoding fails, send the original file
+          console.warn('Direct audio decoding failed, sending original file:', err);
+          resolve(file);
         }
       };
       
-      reader.onerror = reject;
+      reader.onerror = () => {
+        // If reading fails, send the original file
+        resolve(file);
+      };
+      
       reader.readAsArrayBuffer(file);
     });
   };
